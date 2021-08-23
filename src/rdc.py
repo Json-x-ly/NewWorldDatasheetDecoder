@@ -27,22 +27,35 @@ class Datasheet:
 		self.headerOffset        = Datasheet.metaSize
 		self.cellSectionOffset   = self.columnSize + Datasheet.metaSize
 		self.stringSectionOffset = self.cellSectionOffset + self.cellSectionSize
-		self.localizationDict = dictionary
+		self.localizationDict    = dictionary
+
+		self._f.seek(0)
+		self.metaMV = memoryview(self._f.read(Datasheet.metaSize)).cast("i")
+		self.headerMV = memoryview(self._f.read(self.columnSize)).cast("i")
+		self.cellMV = memoryview(self._f.read(self.cellSectionSize)).cast("i")
+		self.stringRaw = self._f.read(self.stringSectionSize)
 
 		self.rows = []
 		self.headers = []
 		self.PrepareHeaders()
 
+	def __len__(self):
+		return
+
 	def PrepareHeaders(self):
-		self.headers = self.ParseSection(self.headerOffset, self.columnCount, 4, 4)
+		for index in range(len(self.headerMV)):
+			if index % 3 != 1:
+				continue
+			val = self.GetStringFromOffset(self.headerMV[index])
+			self.headers.append(val)
 
 	def PrepareRows(self):
-		for row in range(0, self.rowCount):
-			DrawProgress("Processing row " + str(row+1) + " of " + str(self.rowCount))
-			self.rows.append(self.ParseSection(self.cellSectionOffset + (row * self.rowSize), self.columnCount, 0, 4))
-		return csv
+		for row in range(self.rowCount):
+			strideStart = row * (self.columnCount*2)
+			entry = Entry(self, self.cellMV[strideStart: strideStart + (self.columnCount*2)])
+			self.rows.append(entry)
 
-	def ParseSection(self, start, count, skipearly, skiplate):
+	def ParseSection(self, start, count, skipearly, skiplate, localize = True):
 		self._f.seek(start)
 		result = []
 		offsetList = []
@@ -59,22 +72,19 @@ class Datasheet:
 				offsetList.append(stringSectionSize+1)
 		for index in range(len(offsetList)):
 			offset = offsetList[index]
-			string = self.GetStringFromOffset(offset)
-			string = self.XMLCrossReference(string)
-			result.append(string)
+			value = self.GetStringFromOffset(offset)
+			if localize == True:
+				value = self.XMLCrossReference(value)
+			result.append(value)
 		return result
 
 	def GetStringFromOffset(self, offset):
 		if offset > self.stringSectionSize:
 			return ""
-		self._f.seek(self.stringSectionOffset, 0)
-		val = self._f.seek(offset, 1)
-		val = self._f.read(1)
-		stream = bytearray()
-		while not val == b'\x00':
-			stream.append(int.from_bytes(val, 'little'))
-			val = self._f.read(1)
-		return stream.decode()
+		sliceEnd = offset
+		while not self.stringRaw[sliceEnd:sliceEnd+1] == b'\x00':
+			sliceEnd += 1
+		return self.stringRaw[offset:sliceEnd].decode('utf-8')
 
 	def WriteToFile(self, path):
 		dirname = os.path.dirname(__file__)
@@ -84,15 +94,34 @@ class Datasheet:
 			writer = csv.writer(csvfile, delimiter=';', quotechar='\'')
 			writer.writerow(self.headers)
 			for x in self.rows:
-				writer.writerow(x)
+				writer.writerow(x.values)
 				pass
 
 	def XMLCrossReference(self, string):
-		ref = next((key for key in self.localizationDict.keys() if key.startswith(string)), None)
-		if ref is None:
+		key = string.lower()
+		if key is None:
 			return string
-		else:
-			return ref
+		try:
+			val = int(key)
+			return string
+		except ValueError:
+			try:
+				val = float(key)
+				return string
+			except ValueError:
+				if len(key) <= 2:
+					return string
+				try:
+					ref = self.localizationDict[key]
+					return ref
+				except KeyError:
+					return string
+		return string
+				#ref = next((key for key in self.localizationDict.keys() if key.startswith(string)), None)
+				#if ref is None:
+				#	return string
+				#else:
+				#	return self.localizationDict[ref]
 
 def XMLListParse(xmlfile):
 	tree = ET.parse(xmlfile)
@@ -101,19 +130,51 @@ def XMLListParse(xmlfile):
 	dictionary = {}
 
 	for resource in root.findall('string'):
-		dictionary[(resource.get("key").removesuffix("_RecipeName"))] = resource.text
+		key = resource.get("key").lower()
+		if "_description" in key:
+			continue
+		if "_main" in key:
+			continue
+		if "_groupdesc" in key:
+			continue
+		key = key.removesuffix("_mastername")
+		key = key.removesuffix("_groupname")
+		key = key.removesuffix("_categoryname")
+		if key is None:
+			continue
+		if key not in dictionary.keys():
+			dictionary[key] = resource.text
 
 	return dictionary
 
 #Move to different file for more structured parsing
-class Recipe:
-	"Collection of decoded recipe information"
-	def __init__(self, data, tableheadercount):
+class Entry:
+	"Collection of decoded row information"
+	def __init__(self, datasheet: Datasheet, data: memoryview):
+		self.datasheet = datasheet
 		self.dataraw = data
-		self.columncount = tableheadercount
-		self.parse_data(data, tableheadercount)
+		self.values = []
+		self.columncount = len(self.datasheet.headers)
+		self.ParseData(data)
+
+	def __len__(self):
+		return len(self.values)
+
+	def __getitem__(self, key: int):
+		return self.values[key]
         
-	def parse(self, data, tableheadercount):
+	def ParseData(self, data: memoryview):
+		for index in range(len(data)):
+			if index % 2 != 0:
+				continue
+			offset = data[index]
+			if offset < 2:
+				offset = self.datasheet.stringSectionSize+1
+			val = self.datasheet.GetStringFromOffset(offset)
+			val = self.datasheet.XMLCrossReference(val)
+			self.values.append(val)
+
+	def ToCSV(self):
 		pass
 
 def PrintRange(start, range):

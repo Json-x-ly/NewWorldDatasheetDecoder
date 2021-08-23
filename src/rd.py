@@ -30,12 +30,17 @@ def main(argv):
 
 	inDir = config['SETTINGS']['InputDir']
 
+	processedCount = 1
+	print("Parsing Datasheets...")
 	for filepath in glob.glob(os.path.join(inDir, '*.datasheet')):
+		print("Parsing Datasheet "+str(processedCount)+" ...")
 		datasheet = Datasheet(filepath, localizeDict)
-
+		print(localizeDict)
 		datasheet.PrepareRows()
 		datasheet.WriteToFile(config['SETTINGS']['OutputDir'])
-	pass
+		processedCount += 1
+
+	print(str(processedCount-1) + " Files Processed")
 
 def InitializeConfig():
 	if os.path.isfile("settings.ini") == True:
